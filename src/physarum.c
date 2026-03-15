@@ -10,15 +10,17 @@ void *memset(void *s, int c, unsigned long n) {
     return s;
 }
 
-#define W 1024
-#define H 1024
-#define N (W * H)
+#define MAX_W 2560
+#define MAX_H 1440
+#define MAX_N (MAX_W * MAX_H)
 #define MAX_AGENTS 100000
 
+static int w = 1024, h = 1024, n = 1024 * 1024;
+
 // trail map (double-buffered)
-static float trail_a[N], trail_b[N];
+static float trail_a[MAX_N], trail_b[MAX_N];
 static float *trail_read = trail_a, *trail_write = trail_b;
-static unsigned char intensity[N];
+static unsigned char intensity[MAX_N];
 
 // agent state
 static float agent_x[MAX_AGENTS];
@@ -71,25 +73,29 @@ static float sense(int agent_idx, float angle_offset) {
     float sy = agent_y[agent_idx] + sinf_approx(a) * sensor_dist;
 
     // wrap
-    int ix = ((int)sx % W + W) % W;
-    int iy = ((int)sy % H + H) % H;
+    int ix = ((int)sx % w + w) % w;
+    int iy = ((int)sy % h + h) % h;
 
-    return trail_read[iy * W + ix];
+    return trail_read[iy * w + ix];
 }
 
 __attribute__((export_name("physarum_init")))
-void physarum_init(int count) {
+void physarum_init(int count, int width, int height) {
+    if (width > MAX_W) width = MAX_W;
+    if (height > MAX_H) height = MAX_H;
+    w = width; h = height; n = w * h;
+
     if (count > MAX_AGENTS) count = MAX_AGENTS;
     num_agents = count;
 
-    memset(trail_a, 0, sizeof(trail_a));
-    memset(trail_b, 0, sizeof(trail_b));
+    memset(trail_a, 0, n * sizeof(float));
+    memset(trail_b, 0, n * sizeof(float));
     trail_read = trail_a;
     trail_write = trail_b;
 
     // spawn agents in a disc at center
-    float cx = W / 2.0f, cy = H / 2.0f;
-    float max_r = W * 0.35f;
+    float cx = w / 2.0f, cy = h / 2.0f;
+    float max_r = (w < h ? w : h) * 0.35f;
     for (int i = 0; i < count; i++) {
         float r = max_r * randf();
         float a = randf() * 6.28318530f;
@@ -137,36 +143,36 @@ void physarum_step(int steps) {
             agent_y[i] += sinf_approx(agent_angle[i]) * move_speed;
 
             // wrap
-            if (agent_x[i] < 0) agent_x[i] += W;
-            if (agent_x[i] >= W) agent_x[i] -= W;
-            if (agent_y[i] < 0) agent_y[i] += H;
-            if (agent_y[i] >= H) agent_y[i] -= H;
+            if (agent_x[i] < 0) agent_x[i] += w;
+            if (agent_x[i] >= w) agent_x[i] -= w;
+            if (agent_y[i] < 0) agent_y[i] += h;
+            if (agent_y[i] >= h) agent_y[i] -= h;
 
             // deposit trail
             int ix = (int)agent_x[i];
             int iy = (int)agent_y[i];
-            trail_read[iy * W + ix] += deposit_amount;
+            trail_read[iy * w + ix] += deposit_amount;
         }
 
         // diffuse + decay into trail_write
-        for (int y = 0; y < H; y++) {
-            int ym = (y - 1 + H) % H;
-            int yp = (y + 1) % H;
-            for (int x = 0; x < W; x++) {
-                int xm = (x - 1 + W) % W;
-                int xp = (x + 1) % W;
+        for (int y = 0; y < h; y++) {
+            int ym = (y - 1 + h) % h;
+            int yp = (y + 1) % h;
+            for (int x = 0; x < w; x++) {
+                int xm = (x - 1 + w) % w;
+                int xp = (x + 1) % w;
 
-                float sum = trail_read[ym * W + xm]
-                          + trail_read[ym * W + x]
-                          + trail_read[ym * W + xp]
-                          + trail_read[y  * W + xm]
-                          + trail_read[y  * W + x]
-                          + trail_read[y  * W + xp]
-                          + trail_read[yp * W + xm]
-                          + trail_read[yp * W + x]
-                          + trail_read[yp * W + xp];
+                float sum = trail_read[ym * w + xm]
+                          + trail_read[ym * w + x]
+                          + trail_read[ym * w + xp]
+                          + trail_read[y  * w + xm]
+                          + trail_read[y  * w + x]
+                          + trail_read[y  * w + xp]
+                          + trail_read[yp * w + xm]
+                          + trail_read[yp * w + x]
+                          + trail_read[yp * w + xp];
 
-                trail_write[y * W + x] = (sum / 9.0f) * decay_rate;
+                trail_write[y * w + x] = (sum / 9.0f) * decay_rate;
             }
         }
 
@@ -179,7 +185,7 @@ void physarum_step(int steps) {
 
 __attribute__((export_name("physarum_pixels")))
 unsigned char* physarum_pixels(void) {
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         float t = trail_read[i] * 0.15f;
         if (t > 1.0f) t = 1.0f;
         intensity[i] = (unsigned char)(t * 255.0f);

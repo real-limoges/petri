@@ -9,12 +9,14 @@ void *memset(void *s, int c, unsigned long n) {
     return s;
 }
 
-#define W 1024
-#define H 1024
-#define N (W * H)
+#define MAX_W 2560
+#define MAX_H 1440
+#define MAX_N (MAX_W * MAX_H)
 #define MAX_BOIDS 3000
 
-static unsigned char intensity[N];
+static int w = 1024, h = 1024, n = 1024 * 1024;
+
+static unsigned char intensity[MAX_N];
 
 static float boid_x[MAX_BOIDS];
 static float boid_y[MAX_BOIDS];
@@ -23,7 +25,7 @@ static float boid_vy[MAX_BOIDS];
 static int num_boids = 0;
 
 // trail map for visual persistence
-static float trail[N];
+static float trail[MAX_N];
 
 // params
 static float sep_radius = 15.0f;
@@ -52,14 +54,18 @@ static float sqrtf_approx(float x) {
 }
 
 __attribute__((export_name("boids_init")))
-void boids_init(int count) {
+void boids_init(int count, int width, int height) {
+    if (width > MAX_W) width = MAX_W;
+    if (height > MAX_H) height = MAX_H;
+    w = width; h = height; n = w * h;
+
     if (count > MAX_BOIDS) count = MAX_BOIDS;
     num_boids = count;
-    memset(trail, 0, sizeof(trail));
+    memset(trail, 0, n * sizeof(float));
 
     for (int i = 0; i < count; i++) {
-        boid_x[i] = randf() * W;
-        boid_y[i] = randf() * H;
+        boid_x[i] = randf() * w;
+        boid_y[i] = randf() * h;
         float angle = randf() * 6.28318530f;
         float speed = 1.0f + randf() * 2.0f;
         // inline sin/cos via Taylor
@@ -91,8 +97,8 @@ void boids_step(int steps) {
                 float dx = boid_x[j] - boid_x[i];
                 float dy = boid_y[j] - boid_y[i];
                 // wrap distance
-                if (dx > W/2) dx -= W; if (dx < -W/2) dx += W;
-                if (dy > H/2) dy -= H; if (dy < -H/2) dy += H;
+                if (dx > w/2) dx -= w; if (dx < -w/2) dx += w;
+                if (dy > h/2) dy -= h; if (dy < -h/2) dy += h;
                 float d2 = dx * dx + dy * dy;
 
                 if (d2 < sep_radius * sep_radius && d2 > 0) {
@@ -140,20 +146,20 @@ void boids_step(int steps) {
             boid_y[i] += boid_vy[i];
 
             // wrap
-            if (boid_x[i] < 0) boid_x[i] += W;
-            if (boid_x[i] >= W) boid_x[i] -= W;
-            if (boid_y[i] < 0) boid_y[i] += H;
-            if (boid_y[i] >= H) boid_y[i] -= H;
+            if (boid_x[i] < 0) boid_x[i] += w;
+            if (boid_x[i] >= w) boid_x[i] -= w;
+            if (boid_y[i] < 0) boid_y[i] += h;
+            if (boid_y[i] >= h) boid_y[i] -= h;
 
             // deposit trail
             int ix = (int)boid_x[i];
             int iy = (int)boid_y[i];
-            if (ix >= 0 && ix < W && iy >= 0 && iy < H)
-                trail[iy * W + ix] += 3.0f;
+            if (ix >= 0 && ix < w && iy >= 0 && iy < h)
+                trail[iy * w + ix] += 3.0f;
         }
 
         // decay trail
-        for (int i = 0; i < N; i++)
+        for (int i = 0; i < n; i++)
             trail[i] *= trail_decay;
     }
 }
@@ -164,8 +170,8 @@ void boids_swap_one(void) {
     if (num_boids == 0) return;
     int i = (int)(randf() * num_boids);
     if (i >= num_boids) i = num_boids - 1;
-    boid_x[i] = randf() * W;
-    boid_y[i] = randf() * H;
+    boid_x[i] = randf() * w;
+    boid_y[i] = randf() * h;
     float angle = randf() * 6.28318530f;
     float speed = 1.0f + randf() * 2.0f;
     float a = angle;
@@ -178,7 +184,7 @@ void boids_swap_one(void) {
 
 __attribute__((export_name("boids_pixels")))
 unsigned char* boids_pixels(void) {
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         float t = trail[i];
         if (t > 1.0f) t = 1.0f;
         intensity[i] = (unsigned char)(t * 255.0f);
