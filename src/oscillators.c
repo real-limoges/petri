@@ -9,14 +9,16 @@ void *memset(void *s, int c, unsigned long n) {
     return s;
 }
 
-#define W 512
-#define H 512
-#define N (W * H)
+#define MAX_W 2560
+#define MAX_H 1440
+#define MAX_N (MAX_W * MAX_H)
 
-static float phase[N];       // phase angle [0, 2π)
-static float freq[N];        // natural frequency
-static float phase_new[N];
-static unsigned char intensity[N];
+static int w = 512, h = 512, n = 512 * 512;
+
+static float phase[MAX_N];       // phase angle [0, 2pi)
+static float freq[MAX_N];        // natural frequency
+static float phase_new[MAX_N];
+static unsigned char intensity[MAX_N];
 
 static float coupling = 0.3f;
 static float dt = 0.05f;
@@ -45,8 +47,12 @@ static float cosf_approx(float x) {
 }
 
 __attribute__((export_name("osc_init")))
-void osc_init(void) {
-    for (int i = 0; i < N; i++) {
+void osc_init(int width, int height) {
+    if (width > MAX_W) width = MAX_W;
+    if (height > MAX_H) height = MAX_H;
+    w = width; h = height; n = w * h;
+
+    for (int i = 0; i < n; i++) {
         phase[i] = randf() * 6.28318530f;
         // natural frequencies: slight variation around a base
         freq[i] = 1.0f + (randf() - 0.5f) * 0.4f;
@@ -61,38 +67,38 @@ void osc_set_coupling(float k) {
 __attribute__((export_name("osc_step")))
 void osc_step(int steps) {
     for (int s = 0; s < steps; s++) {
-        for (int y = 0; y < H; y++) {
-            int ym = (y - 1 + H) % H;
-            int yp = (y + 1) % H;
-            for (int x = 0; x < W; x++) {
-                int xm = (x - 1 + W) % W;
-                int xp = (x + 1) % W;
-                int i = y * W + x;
+        for (int y = 0; y < h; y++) {
+            int ym = (y - 1 + h) % h;
+            int yp = (y + 1) % h;
+            for (int x = 0; x < w; x++) {
+                int xm = (x - 1 + w) % w;
+                int xp = (x + 1) % w;
+                int i = y * w + x;
                 float p = phase[i];
 
                 // Kuramoto coupling to 4 neighbors
-                float sync = sinf_approx(phase[ym * W + x] - p)
-                           + sinf_approx(phase[yp * W + x] - p)
-                           + sinf_approx(phase[y * W + xm] - p)
-                           + sinf_approx(phase[y * W + xp] - p);
+                float sync = sinf_approx(phase[ym * w + x] - p)
+                           + sinf_approx(phase[yp * w + x] - p)
+                           + sinf_approx(phase[y * w + xm] - p)
+                           + sinf_approx(phase[y * w + xp] - p);
 
                 phase_new[i] = p + dt * (freq[i] + coupling * sync / 4.0f);
 
-                // keep in [0, 2π)
+                // keep in [0, 2pi)
                 while (phase_new[i] >= 6.28318530f) phase_new[i] -= 6.28318530f;
                 while (phase_new[i] < 0.0f) phase_new[i] += 6.28318530f;
             }
         }
 
-        // copy new → current
-        for (int i = 0; i < N; i++)
+        // copy new -> current
+        for (int i = 0; i < n; i++)
             phase[i] = phase_new[i];
     }
 }
 
 __attribute__((export_name("osc_pixels")))
 unsigned char* osc_pixels(void) {
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         float t = (sinf_approx(phase[i]) + 1.0f) * 0.5f;
         intensity[i] = (unsigned char)(t * 255.0f);
     }

@@ -1,4 +1,5 @@
 let wasm, memory;
+let simW, simH;
 
 export async function init() {
     const resp = await fetch('/vendor/petri/wasm/langton.wasm');
@@ -8,10 +9,13 @@ export async function init() {
     memory = wasm.memory;
 }
 
-export function start(count) { wasm.langton_init(count); }
+export function start(count, width, height) {
+    simW = width; simH = height;
+    wasm.langton_init(count, width, height);
+}
 export function step(n) { wasm.langton_step(n); }
 
 export function getPixels() {
     const ptr = wasm.langton_pixels();
-    return new Uint8Array(memory.buffer, ptr, 1024 * 1024);
+    return new Uint8Array(memory.buffer, ptr, simW * simH);
 }
