@@ -45,7 +45,7 @@ petri/
 │   ├── langton.wasm
 │   ├── oscillators.wasm
 │   └── physarum.wasm
-├── build_macos.sh        # builds all WASM modules
+├── build_all.sh        # builds all WASM modules
 ├── CLAUDE.md
 └── README.md
 ```
@@ -82,10 +82,10 @@ Requires LLVM with `wasm-ld`:
 - **Linux:** `apt install clang lld`
 
 ```bash
-./build_macos.sh
+./build_all.sh
 ```
 
-The script auto-detects Homebrew LLVM on macOS. Override with `CC=/path/to/clang ./build_macos.sh`.
+The script auto-detects Homebrew LLVM on macOS. Override with `CC=/path/to/clang ./build_all.sh`.
 
 After building, commit the `.wasm` files — Fugue imports them directly.
 

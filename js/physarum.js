@@ -1,7 +1,7 @@
 let wasm, memory;
 
 export async function init() {
-    const resp = await fetch('/vendor/petri/physarum.wasm');
+    const resp = await fetch('/vendor/petri/wasm/physarum.wasm');
     const bytes = await resp.arrayBuffer();
     const { instance } = await WebAssembly.instantiate(bytes);
     wasm = instance.exports;
@@ -16,5 +16,5 @@ export function setParams(sa, sd, ts, ms, dep, dec) {
 
 export function getPixels() {
     const ptr = wasm.physarum_pixels();
-    return new Uint8ClampedArray(memory.buffer, ptr, 1024 * 1024 * 4);
+    return new Uint8Array(memory.buffer, ptr, 1024 * 1024);
 }

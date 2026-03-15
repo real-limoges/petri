@@ -16,7 +16,7 @@ void *memset(void *s, int c, unsigned long n) {
 
 static unsigned char grid[N];  // 0 = white, 1 = black
 static float heat[N];          // visit frequency for coloring
-static unsigned char pixels[N * 4];
+static unsigned char intensity[N];
 
 static int ant_x[MAX_ANTS];
 static int ant_y[MAX_ANTS];
@@ -74,26 +74,12 @@ void langton_step(int steps) {
 
 __attribute__((export_name("langton_pixels")))
 unsigned char* langton_pixels(void) {
-    // decay heat slowly
     for (int i = 0; i < N; i++) {
         heat[i] *= 0.9999f;
 
         float t = heat[i] / 10.0f;
         if (t > 1.0f) t = 1.0f;
-
-        int pi = i * 4;
-        if (grid[i]) {
-            // black cells: tinted by heat
-            pixels[pi]     = 8 + (unsigned char)(t * 180.0f);
-            pixels[pi + 1] = 6 + (unsigned char)(t * 140.0f);
-            pixels[pi + 2] = 10 + (unsigned char)(t * 100.0f);
-        } else {
-            // white cells: dim base + heat glow
-            pixels[pi]     = 8 + (unsigned char)(t * 60.0f);
-            pixels[pi + 1] = 6 + (unsigned char)(t * 50.0f);
-            pixels[pi + 2] = 10 + (unsigned char)(t * 40.0f);
-        }
-        pixels[pi + 3] = 255;
+        intensity[i] = (unsigned char)(t * 255.0f);
     }
-    return pixels;
+    return intensity;
 }
