@@ -15,8 +15,8 @@ void *memcpy(void *dest, const void *src, unsigned long n) {
     return dest;
 }
 
-#define W 512
-#define H 512
+#define W 1024
+#define H 1024
 #define N (W * H)
 
 #define DU 0.16f
@@ -110,17 +110,39 @@ void petri_seed(int pattern) {
         }
     }
 
-    // squares
+    // scattered squares
     else if (pattern == 3) {
         for (int s = 0; s < 12; s++) {
             int sx = (int)(randf() * (W - 20));
             int sy = (int)(randf() * (H - 20));
-            int size = 8 + (int)(randf() * 12);  // 8 to 20
+            int size = 8 + (int)(randf() * 12);
             for (int dy = 0; dy < size; dy++) {
                 for (int dx = 0; dx < size; dx++) {
                     int idx = (sy + dy) * W + (sx + dx);
                     u_a[idx] = 0.5f + randf() * 0.02f - 0.01f;
                     v_a[idx] = 0.25f + randf() * 0.02f - 0.01f;
+                }
+            }
+        }
+    }
+
+    // dense field — lots of circles packed across the grid
+    else if (pattern == 4) {
+        for (int s = 0; s < 150; s++) {
+            int cx = 40 + (int)(randf() * (W - 80));
+            int cy = 40 + (int)(randf() * (H - 80));
+            int r = 20 + (int)(randf() * 50);
+            int r2 = r * r;
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    if (dx * dx + dy * dy <= r2) {
+                        int x = cx + dx, y = cy + dy;
+                        if (x >= 0 && x < W && y >= 0 && y < H) {
+                            int idx = y * W + x;
+                            u_a[idx] = 0.5f + randf() * 0.02f - 0.01f;
+                            v_a[idx] = 0.25f + randf() * 0.02f - 0.01f;
+                        }
+                    }
                 }
             }
         }
