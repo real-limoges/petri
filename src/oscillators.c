@@ -16,7 +16,7 @@ void *memset(void *s, int c, unsigned long n) {
 static float phase[N];       // phase angle [0, 2π)
 static float freq[N];        // natural frequency
 static float phase_new[N];
-static unsigned char pixels[N * 4];
+static unsigned char intensity[N];
 
 static float coupling = 0.3f;
 static float dt = 0.05f;
@@ -93,14 +93,8 @@ void osc_step(int steps) {
 __attribute__((export_name("osc_pixels")))
 unsigned char* osc_pixels(void) {
     for (int i = 0; i < N; i++) {
-        // map phase to brightness (sin wave gives smooth pulsing)
         float t = (sinf_approx(phase[i]) + 1.0f) * 0.5f;
-
-        int pi = i * 4;
-        pixels[pi]     = 8 + (unsigned char)(t * 222.0f);
-        pixels[pi + 1] = 6 + (unsigned char)(t * 194.0f);
-        pixels[pi + 2] = 10 + (unsigned char)(t * 150.0f);
-        pixels[pi + 3] = 255;
+        intensity[i] = (unsigned char)(t * 255.0f);
     }
-    return pixels;
+    return intensity;
 }

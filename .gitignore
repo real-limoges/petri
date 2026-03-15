@@ -1,6 +1,7 @@
 cmake-build-debug/
 .idea/
 *.o
+/*.wasm
 .claude/
 docs/
 CLAUDE.md

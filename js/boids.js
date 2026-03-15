@@ -1,7 +1,7 @@
 let wasm, memory;
 
 export async function init() {
-    const resp = await fetch('/vendor/petri/boids.wasm');
+    const resp = await fetch('/vendor/petri/wasm/boids.wasm');
     const bytes = await resp.arrayBuffer();
     const { instance } = await WebAssembly.instantiate(bytes);
     wasm = instance.exports;
@@ -14,5 +14,5 @@ export function swapOne() { wasm.boids_swap_one(); }
 
 export function getPixels() {
     const ptr = wasm.boids_pixels();
-    return new Uint8ClampedArray(memory.buffer, ptr, 1024 * 1024 * 4);
+    return new Uint8Array(memory.buffer, ptr, 1024 * 1024);
 }

@@ -18,7 +18,7 @@ void *memset(void *s, int c, unsigned long n) {
 // trail map (double-buffered)
 static float trail_a[N], trail_b[N];
 static float *trail_read = trail_a, *trail_write = trail_b;
-static unsigned char pixels[N * 4];
+static unsigned char intensity[N];
 
 // agent state
 static float agent_x[MAX_AGENTS];
@@ -182,16 +182,7 @@ unsigned char* physarum_pixels(void) {
     for (int i = 0; i < N; i++) {
         float t = trail_read[i] * 0.15f;
         if (t > 1.0f) t = 1.0f;
-
-        // dark background → bright veins (single high-contrast color ramp)
-        // near-black → bright warm white
-        unsigned char v = (unsigned char)(t * 255.0f);
-
-        int pi = i * 4;
-        pixels[pi]     = 8 + (unsigned char)(t * 222.0f);   // R
-        pixels[pi + 1] = 6 + (unsigned char)(t * 194.0f);   // G
-        pixels[pi + 2] = 10 + (unsigned char)(t * 150.0f);  // B
-        pixels[pi + 3] = 255;
+        intensity[i] = (unsigned char)(t * 255.0f);
     }
-    return pixels;
+    return intensity;
 }

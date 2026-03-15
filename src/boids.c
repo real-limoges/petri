@@ -14,7 +14,7 @@ void *memset(void *s, int c, unsigned long n) {
 #define N (W * H)
 #define MAX_BOIDS 3000
 
-static unsigned char pixels[N * 4];
+static unsigned char intensity[N];
 
 static float boid_x[MAX_BOIDS];
 static float boid_y[MAX_BOIDS];
@@ -178,21 +178,10 @@ void boids_swap_one(void) {
 
 __attribute__((export_name("boids_pixels")))
 unsigned char* boids_pixels(void) {
-    // synthwave palette: dark purple-black base → neon magenta trails
-    // base: rgb(30, 18, 38)  — oklch(18% 0.04 300)
-    // primary: rgb(200, 50, 180) — oklch(72% 0.25 330) neon pink
     for (int i = 0; i < N; i++) {
         float t = trail[i];
         if (t > 1.0f) t = 1.0f;
-
-        // nonlinear curve for more glow
-        float t2 = t * t;
-
-        int pi = i * 4;
-        pixels[pi]     = 28 + (unsigned char)(t * 172.0f + t2 * 55.0f);  // R: 28 → 255
-        pixels[pi + 1] = 19 + (unsigned char)(t2 * 31.0f);               // G: 19 → 50
-        pixels[pi + 2] = 37 + (unsigned char)(t * 101.0f + t2 * 42.0f);  // B: 37 → 180
-        pixels[pi + 3] = 255;
+        intensity[i] = (unsigned char)(t * 255.0f);
     }
-    return pixels;
+    return intensity;
 }
