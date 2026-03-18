@@ -38,6 +38,7 @@ static float cohesion_force = 0.005f;
 static float trail_decay = 0.97f;
 
 static unsigned int rng_state = 42;
+static unsigned int swap_call_count = 0;
 static float randf(void) {
     rng_state ^= rng_state << 13;
     rng_state ^= rng_state >> 17;
@@ -170,6 +171,9 @@ void boids_swap_n(int count) {
     if (num_boids == 0 || count <= 0) return;
     if (count > num_boids) count = num_boids;
 
+    // mix call count into rng so repeated calls produce varied locations
+    rng_state ^= ++swap_call_count * 2654435761u;
+
     float cx = randf() * w;
     float cy = randf() * h;
     float radius = 40.0f;
@@ -194,30 +198,39 @@ void boids_swap_edge(int count) {
     if (num_boids == 0 || count <= 0) return;
     if (count > num_boids) count = num_boids;
 
+    rng_state ^= ++swap_call_count * 2654435761u;
+
     // pick a random edge: 0=top, 1=bottom, 2=left, 3=right
     int edge = (int)(randf() * 4);
     if (edge >= 4) edge = 3;
 
-    float base_vx = 0.0f, base_vy = 0.0f;
-    float base_x = 0.0f, base_y = 0.0f;
     float speed = max_speed * 0.8f;
-    if (edge == 0) { base_y = 0;   base_vy =  speed; base_x = randf() * w; }
-    if (edge == 1) { base_y = h-1; base_vy = -speed; base_x = randf() * w; }
-    if (edge == 2) { base_x = 0;   base_vx =  speed; base_y = randf() * h; }
-    if (edge == 3) { base_x = w-1; base_vx = -speed; base_y = randf() * h; }
-
-    float spread = 30.0f;
+    float depth = 30.0f;  // inward spawn depth
     int start = (int)(randf() * num_boids);
     for (int k = 0; k < count; k++) {
         int i = (start + k) % num_boids;
-        boid_x[i] = base_x + (randf() - 0.5f) * 2.0f * spread;
-        boid_y[i] = base_y + (randf() - 0.5f) * 2.0f * spread;
-        if (boid_x[i] < 0) boid_x[i] = 0;
-        if (boid_x[i] >= w) boid_x[i] = w - 1;
-        if (boid_y[i] < 0) boid_y[i] = 0;
-        if (boid_y[i] >= h) boid_y[i] = h - 1;
-        boid_vx[i] = base_vx + (randf() - 0.5f) * speed * 0.4f;
-        boid_vy[i] = base_vy + (randf() - 0.5f) * speed * 0.4f;
+        // spread along the edge with full width/height, depth only goes inward
+        if (edge == 0) {        // top — spread across width, push downward
+            boid_x[i] = randf() * w;
+            boid_y[i] = randf() * depth;
+            boid_vx[i] = (randf() - 0.5f) * speed * 0.4f;
+            boid_vy[i] = speed + (randf() - 0.5f) * speed * 0.4f;
+        } else if (edge == 1) { // bottom — spread across width, push upward
+            boid_x[i] = randf() * w;
+            boid_y[i] = h - 1 - randf() * depth;
+            boid_vx[i] = (randf() - 0.5f) * speed * 0.4f;
+            boid_vy[i] = -speed + (randf() - 0.5f) * speed * 0.4f;
+        } else if (edge == 2) { // left — spread across height, push rightward
+            boid_x[i] = randf() * depth;
+            boid_y[i] = randf() * h;
+            boid_vx[i] = speed + (randf() - 0.5f) * speed * 0.4f;
+            boid_vy[i] = (randf() - 0.5f) * speed * 0.4f;
+        } else {                // right — spread across height, push leftward
+            boid_x[i] = w - 1 - randf() * depth;
+            boid_y[i] = randf() * h;
+            boid_vx[i] = -speed + (randf() - 0.5f) * speed * 0.4f;
+            boid_vy[i] = (randf() - 0.5f) * speed * 0.4f;
+        }
     }
 }
 
