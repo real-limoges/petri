@@ -164,22 +164,61 @@ void boids_step(int steps) {
     }
 }
 
-// replace one random boid with a new random one
-__attribute__((export_name("boids_swap_one")))
-void boids_swap_one(void) {
-    if (num_boids == 0) return;
-    int i = (int)(randf() * num_boids);
-    if (i >= num_boids) i = num_boids - 1;
-    boid_x[i] = randf() * w;
-    boid_y[i] = randf() * h;
-    float angle = randf() * 6.28318530f;
-    float speed = 1.0f + randf() * 2.0f;
-    float a = angle;
-    float a2 = a * a; float a3 = a2 * a; float a5 = a3 * a2;
-    boid_vx[i] = (a + 1.5707963f - (a + 1.5707963f) * (a + 1.5707963f) * (a + 1.5707963f) / 6.0f) * speed;
-    // simpler: just use raw components
-    boid_vx[i] = (randf() - 0.5f) * speed * 2.0f;
-    boid_vy[i] = (randf() - 0.5f) * speed * 2.0f;
+// replace count boids, clustered around a single random point
+__attribute__((export_name("boids_swap_n")))
+void boids_swap_n(int count) {
+    if (num_boids == 0 || count <= 0) return;
+    if (count > num_boids) count = num_boids;
+
+    float cx = randf() * w;
+    float cy = randf() * h;
+    float radius = 40.0f;
+
+    int start = (int)(randf() * num_boids);
+    for (int k = 0; k < count; k++) {
+        int i = (start + k) % num_boids;
+        boid_x[i] = cx + (randf() - 0.5f) * 2.0f * radius;
+        boid_y[i] = cy + (randf() - 0.5f) * 2.0f * radius;
+        if (boid_x[i] < 0) boid_x[i] += w;
+        if (boid_x[i] >= w) boid_x[i] -= w;
+        if (boid_y[i] < 0) boid_y[i] += h;
+        if (boid_y[i] >= h) boid_y[i] -= h;
+        float speed = 1.0f + randf() * 2.0f;
+        boid_vx[i] = (randf() - 0.5f) * speed * 2.0f;
+        boid_vy[i] = (randf() - 0.5f) * speed * 2.0f;
+    }
+}
+
+__attribute__((export_name("boids_swap_edge")))
+void boids_swap_edge(int count) {
+    if (num_boids == 0 || count <= 0) return;
+    if (count > num_boids) count = num_boids;
+
+    // pick a random edge: 0=top, 1=bottom, 2=left, 3=right
+    int edge = (int)(randf() * 4);
+    if (edge >= 4) edge = 3;
+
+    float base_vx = 0.0f, base_vy = 0.0f;
+    float base_x = 0.0f, base_y = 0.0f;
+    float speed = max_speed * 0.8f;
+    if (edge == 0) { base_y = 0;   base_vy =  speed; base_x = randf() * w; }
+    if (edge == 1) { base_y = h-1; base_vy = -speed; base_x = randf() * w; }
+    if (edge == 2) { base_x = 0;   base_vx =  speed; base_y = randf() * h; }
+    if (edge == 3) { base_x = w-1; base_vx = -speed; base_y = randf() * h; }
+
+    float spread = 30.0f;
+    int start = (int)(randf() * num_boids);
+    for (int k = 0; k < count; k++) {
+        int i = (start + k) % num_boids;
+        boid_x[i] = base_x + (randf() - 0.5f) * 2.0f * spread;
+        boid_y[i] = base_y + (randf() - 0.5f) * 2.0f * spread;
+        if (boid_x[i] < 0) boid_x[i] = 0;
+        if (boid_x[i] >= w) boid_x[i] = w - 1;
+        if (boid_y[i] < 0) boid_y[i] = 0;
+        if (boid_y[i] >= h) boid_y[i] = h - 1;
+        boid_vx[i] = base_vx + (randf() - 0.5f) * speed * 0.4f;
+        boid_vy[i] = base_vy + (randf() - 0.5f) * speed * 0.4f;
+    }
 }
 
 __attribute__((export_name("boids_pixels")))
