@@ -37,11 +37,9 @@ static float align_force = 0.03f;
 static float cohesion_force = 0.005f;
 static float trail_decay = 0.97f;
 static float crowd_threshold = 20.0f;
-static float wander_force = 0.015f;
 static float min_speed = 0.5f;
 
 static unsigned int rng_state = 42;
-static unsigned int swap_call_count = 0;
 static float randf(void) {
     rng_state ^= rng_state << 13;
     rng_state ^= rng_state >> 17;
@@ -147,11 +145,6 @@ void boids_step(int steps) {
                 boid_vy[i] += (target_y - boid_y[i]) * eff_cohesion;
             }
 
-            // wander: random steering prevents stable equilibria
-            float wander_angle = randf() * 6.28318530f;
-            boid_vx[i] += cosf_approx(wander_angle) * wander_force;
-            boid_vy[i] += sinf_approx(wander_angle) * wander_force;
-
             // clamp speed
             float spd2 = boid_vx[i] * boid_vx[i] + boid_vy[i] * boid_vy[i];
             if (spd2 > max_speed * max_speed) {
@@ -189,75 +182,6 @@ void boids_step(int steps) {
         // decay trail
         for (int i = 0; i < n; i++)
             trail[i] *= trail_decay;
-    }
-}
-
-// replace count boids, clustered around a single random point
-__attribute__((export_name("boids_swap_n")))
-void boids_swap_n(int count) {
-    if (num_boids == 0 || count <= 0) return;
-    if (count > num_boids) count = num_boids;
-
-    // mix call count into rng so repeated calls produce varied locations
-    rng_state ^= ++swap_call_count * 2654435761u;
-
-    float cx = randf() * w;
-    float cy = randf() * h;
-    float radius = 40.0f;
-
-    int start = (int)(randf() * num_boids);
-    for (int k = 0; k < count; k++) {
-        int i = (start + k) % num_boids;
-        boid_x[i] = cx + (randf() - 0.5f) * 2.0f * radius;
-        boid_y[i] = cy + (randf() - 0.5f) * 2.0f * radius;
-        if (boid_x[i] < 0) boid_x[i] += w;
-        if (boid_x[i] >= w) boid_x[i] -= w;
-        if (boid_y[i] < 0) boid_y[i] += h;
-        if (boid_y[i] >= h) boid_y[i] -= h;
-        float speed = 1.0f + randf() * 2.0f;
-        boid_vx[i] = (randf() - 0.5f) * speed * 2.0f;
-        boid_vy[i] = (randf() - 0.5f) * speed * 2.0f;
-    }
-}
-
-__attribute__((export_name("boids_swap_edge")))
-void boids_swap_edge(int count) {
-    if (num_boids == 0 || count <= 0) return;
-    if (count > num_boids) count = num_boids;
-
-    rng_state ^= ++swap_call_count * 2654435761u;
-
-    // pick a random edge: 0=top, 1=bottom, 2=left, 3=right
-    int edge = (int)(randf() * 4);
-    if (edge >= 4) edge = 3;
-
-    float speed = max_speed * 0.8f;
-    float depth = 30.0f;  // inward spawn depth
-    int start = (int)(randf() * num_boids);
-    for (int k = 0; k < count; k++) {
-        int i = (start + k) % num_boids;
-        // spread along the edge with full width/height, depth only goes inward
-        if (edge == 0) {        // top — spread across width, push downward
-            boid_x[i] = randf() * w;
-            boid_y[i] = randf() * depth;
-            boid_vx[i] = (randf() - 0.5f) * speed * 0.4f;
-            boid_vy[i] = speed + (randf() - 0.5f) * speed * 0.4f;
-        } else if (edge == 1) { // bottom — spread across width, push upward
-            boid_x[i] = randf() * w;
-            boid_y[i] = h - 1 - randf() * depth;
-            boid_vx[i] = (randf() - 0.5f) * speed * 0.4f;
-            boid_vy[i] = -speed + (randf() - 0.5f) * speed * 0.4f;
-        } else if (edge == 2) { // left — spread across height, push rightward
-            boid_x[i] = randf() * depth;
-            boid_y[i] = randf() * h;
-            boid_vx[i] = speed + (randf() - 0.5f) * speed * 0.4f;
-            boid_vy[i] = (randf() - 0.5f) * speed * 0.4f;
-        } else {                // right — spread across height, push leftward
-            boid_x[i] = w - 1 - randf() * depth;
-            boid_y[i] = randf() * h;
-            boid_vx[i] = -speed + (randf() - 0.5f) * speed * 0.4f;
-            boid_vy[i] = (randf() - 0.5f) * speed * 0.4f;
-        }
     }
 }
 
