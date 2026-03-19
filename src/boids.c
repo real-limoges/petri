@@ -36,6 +36,9 @@ static float sep_force = 0.05f;
 static float align_force = 0.03f;
 static float cohesion_force = 0.005f;
 static float trail_decay = 0.97f;
+static float crowd_threshold = 20.0f;
+static float wander_force = 0.015f;
+static float min_speed = 0.5f;
 
 static unsigned int rng_state = 42;
 static unsigned int swap_call_count = 0;
@@ -137,9 +140,17 @@ void boids_step(int steps) {
             if (c_count > 0) {
                 float target_x = cx / c_count;
                 float target_y = cy / c_count;
-                boid_vx[i] += (target_x - boid_x[i]) * cohesion_force;
-                boid_vy[i] += (target_y - boid_y[i]) * cohesion_force;
+                // attract when sparse, repel when crowded
+                float density_scale = 1.0f - (float)c_count / crowd_threshold;
+                float eff_cohesion = cohesion_force * density_scale;
+                boid_vx[i] += (target_x - boid_x[i]) * eff_cohesion;
+                boid_vy[i] += (target_y - boid_y[i]) * eff_cohesion;
             }
+
+            // wander: random steering prevents stable equilibria
+            float wander_angle = randf() * 6.28318530f;
+            boid_vx[i] += cosf_approx(wander_angle) * wander_force;
+            boid_vy[i] += sinf_approx(wander_angle) * wander_force;
 
             // clamp speed
             float spd2 = boid_vx[i] * boid_vx[i] + boid_vy[i] * boid_vy[i];
@@ -147,6 +158,16 @@ void boids_step(int steps) {
                 float spd = sqrtf_approx(spd2);
                 boid_vx[i] = boid_vx[i] / spd * max_speed;
                 boid_vy[i] = boid_vy[i] / spd * max_speed;
+            } else if (spd2 < min_speed * min_speed) {
+                if (spd2 > 0.0001f) {
+                    float spd = sqrtf_approx(spd2);
+                    boid_vx[i] = boid_vx[i] / spd * min_speed;
+                    boid_vy[i] = boid_vy[i] / spd * min_speed;
+                } else {
+                    float angle = randf() * 6.28318530f;
+                    boid_vx[i] = cosf_approx(angle) * min_speed;
+                    boid_vy[i] = sinf_approx(angle) * min_speed;
+                }
             }
 
             boid_x[i] += boid_vx[i];
