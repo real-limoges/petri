@@ -28,15 +28,15 @@ static int num_boids = 0;
 static float trail[MAX_N];
 
 // params
-static float sep_radius = 15.0f;
-static float align_radius = 40.0f;
-static float cohesion_radius = 60.0f;
+static float sep_radius = 25.0f;
+static float align_radius = 30.0f;
+static float cohesion_radius = 35.0f;
 static float max_speed = 3.0f;
-static float sep_force = 0.05f;
-static float align_force = 0.03f;
-static float cohesion_force = 0.005f;
+static float sep_force = 0.06f;
+static float align_force = 0.02f;
+static float cohesion_force = 0.002f;
 static float trail_decay = 0.97f;
-static float crowd_threshold = 20.0f;
+static float crowd_threshold = 8.0f;
 static float min_speed = 0.5f;
 
 static unsigned int rng_state = 42;
@@ -121,8 +121,8 @@ void boids_step(int steps) {
                     a_count++;
                 }
                 if (d2 < cohesion_radius * cohesion_radius) {
-                    cx += boid_x[j];
-                    cy += boid_y[j];
+                    cx += dx;
+                    cy += dy;
                     c_count++;
                 }
             }
@@ -136,13 +136,11 @@ void boids_step(int steps) {
                 boid_vy[i] += (ay / a_count - boid_vy[i]) * align_force;
             }
             if (c_count > 0) {
-                float target_x = cx / c_count;
-                float target_y = cy / c_count;
-                // attract when sparse, repel when crowded
+                // cx/cy are already wrap-corrected deltas, so average = offset to center of mass
                 float density_scale = 1.0f - (float)c_count / crowd_threshold;
                 float eff_cohesion = cohesion_force * density_scale;
-                boid_vx[i] += (target_x - boid_x[i]) * eff_cohesion;
-                boid_vy[i] += (target_y - boid_y[i]) * eff_cohesion;
+                boid_vx[i] += (cx / c_count) * eff_cohesion;
+                boid_vy[i] += (cy / c_count) * eff_cohesion;
             }
 
             // clamp speed
