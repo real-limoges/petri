@@ -104,9 +104,8 @@ void boids_step(int steps) {
                 if (i == j) continue;
                 float dx = boid_x[j] - boid_x[i];
                 float dy = boid_y[j] - boid_y[i];
-                // wrap distance
+                // wrap distance (x only — y has hard walls)
                 if (dx > w/2) dx -= w; if (dx < -w/2) dx += w;
-                if (dy > h/2) dy -= h; if (dy < -h/2) dy += h;
                 float d2 = dx * dx + dy * dy;
 
                 if (d2 < sep_radius * sep_radius && d2 > 0) {
@@ -164,11 +163,11 @@ void boids_step(int steps) {
             boid_x[i] += boid_vx[i];
             boid_y[i] += boid_vy[i];
 
-            // wrap
+            // wrap x, bounce y
             if (boid_x[i] < 0) boid_x[i] += w;
             if (boid_x[i] >= w) boid_x[i] -= w;
-            if (boid_y[i] < 0) boid_y[i] += h;
-            if (boid_y[i] >= h) boid_y[i] -= h;
+            if (boid_y[i] < 0) { boid_y[i] = 0; boid_vy[i] = -boid_vy[i]; }
+            if (boid_y[i] >= h) { boid_y[i] = h - 1; boid_vy[i] = -boid_vy[i]; }
 
             // deposit trail
             int ix = (int)boid_x[i];
