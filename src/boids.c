@@ -46,6 +46,23 @@ static float randf(void) {
     return (float)(rng_state & 0x7fffffff) / (float)0x7fffffff;
 }
 
+static float sinf_approx(float x) {
+    const float pi = 3.14159265f;
+    const float twopi = 6.28318530f;
+    // reduce to [-pi, pi]
+    while (x > pi) x -= twopi;
+    while (x < -pi) x += twopi;
+    // reduce to [-pi/2, pi/2] where Taylor converges well
+    if (x > pi * 0.5f) x = pi - x;
+    else if (x < -pi * 0.5f) x = -pi - x;
+    float x2 = x * x;
+    return x * (1.0f - x2 * (1.0f / 6.0f - x2 * (1.0f / 120.0f)));
+}
+
+static float cosf_approx(float x) {
+    return sinf_approx(x + 1.57079632f);
+}
+
 static float sqrtf_approx(float x) {
     if (x <= 0) return 0;
     float guess = x * 0.5f;
@@ -69,19 +86,8 @@ void boids_init(int count, int width, int height) {
         boid_y[i] = randf() * h;
         float angle = randf() * 6.28318530f;
         float speed = 1.0f + randf() * 2.0f;
-        // inline sin/cos via Taylor
-        float a = angle;
-        float a2 = a * a;
-        float a3 = a2 * a;
-        float a5 = a3 * a2;
-        float sin_a = a - a3 / 6.0f + a5 / 120.0f;
-        float ca = a + 1.5707963f;
-        float ca2 = ca * ca;
-        float ca3 = ca2 * ca;
-        float ca5 = ca3 * ca2;
-        float cos_a = ca - ca3 / 6.0f + ca5 / 120.0f;
-        boid_vx[i] = cos_a * speed;
-        boid_vy[i] = sin_a * speed;
+        boid_vx[i] = cosf_approx(angle) * speed;
+        boid_vy[i] = sinf_approx(angle) * speed;
     }
 }
 
