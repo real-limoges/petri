@@ -92,6 +92,53 @@ void boids_init(int count, int width, int height) {
     }
 }
 
+__attribute__((export_name("boids_set_count")))
+void boids_set_count(int count) {
+    if (count < 0) count = 0;
+    if (count > MAX_BOIDS) count = MAX_BOIDS;
+    if (count > num_boids) {
+        for (int i = num_boids; i < count; i++) {
+            boid_x[i] = randf() * w;
+            boid_y[i] = randf() * h;
+            float angle = randf() * 6.28318530f;
+            float speed = 1.0f + randf() * 2.0f;
+            boid_vx[i] = cosf_approx(angle) * speed;
+            boid_vy[i] = sinf_approx(angle) * speed;
+        }
+    }
+    num_boids = count;
+}
+
+__attribute__((export_name("boids_set_sep_radius")))
+void boids_set_sep_radius(float v) { sep_radius = v; }
+
+__attribute__((export_name("boids_set_align_radius")))
+void boids_set_align_radius(float v) { align_radius = v; }
+
+__attribute__((export_name("boids_set_cohesion_radius")))
+void boids_set_cohesion_radius(float v) { cohesion_radius = v; }
+
+__attribute__((export_name("boids_set_sep_force")))
+void boids_set_sep_force(float v) { sep_force = v; }
+
+__attribute__((export_name("boids_set_align_force")))
+void boids_set_align_force(float v) { align_force = v; }
+
+__attribute__((export_name("boids_set_cohesion_force")))
+void boids_set_cohesion_force(float v) { cohesion_force = v; }
+
+__attribute__((export_name("boids_set_max_speed")))
+void boids_set_max_speed(float v) { max_speed = v; }
+
+__attribute__((export_name("boids_set_min_speed")))
+void boids_set_min_speed(float v) { min_speed = v; }
+
+__attribute__((export_name("boids_set_trail_decay")))
+void boids_set_trail_decay(float v) { trail_decay = v; }
+
+__attribute__((export_name("boids_set_crowd_threshold")))
+void boids_set_crowd_threshold(float v) { crowd_threshold = v; }
+
 __attribute__((export_name("boids_step")))
 void boids_step(int steps) {
     for (int s = 0; s < steps; s++) {
