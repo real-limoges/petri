@@ -23,4 +23,14 @@ $CC --target=wasm32-unknown-unknown -O2 -flto -nostdlib \
     -Wl,--initial-memory=67108864 \
     -o wasm/sandpile.wasm src/sandpile.c
 
+$CC --target=wasm32-unknown-unknown -O2 -flto -nostdlib \
+    -Wl,--no-entry -Wl,--export-dynamic \
+    -Wl,--initial-memory=131072 \
+    -o wasm/prism.wasm src/prism.c
+
+$CC --target=wasm32-unknown-unknown -O2 -flto -nostdlib \
+    -Wl,--no-entry -Wl,--export-dynamic \
+    -Wl,--initial-memory=131072 \
+    -o wasm/cones.wasm src/cones.c
+
 echo "Built all WASM modules."
