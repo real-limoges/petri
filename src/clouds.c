@@ -2,18 +2,20 @@
 // Cloud sim -- 2D moist convection on a vertical slice. Boussinesq with
 // saturation closure. See fugue/docs/cloud_theory.md for full derivation.
 //
+// Physics-only: this module exposes raw fields (qc, etc.) and primitives
+// (apply_bubble) and steps the solver. All composition (palette, view
+// window, render, foreground) lives in JS -- see
+// fugue/assets/js/hooks/clouds_canvas.js.
+//
 // Operator splitting per timestep (theory doc 3.4):
 //   1. semi-Lagrangian advect T, qv, qc, u, w
 //   2. buoyancy on w, dry-adiabatic cooling on T
 //   3. pressure projection (Jacobi) for incompressibility
 //   4. saturation adjustment (Tetens)
-//   5. boundary conditions per regime
+//   5. boundary conditions
 //
-// Two regimes share the solver and differ only in reference profile + BCs:
-//   regime 0 = SF marine layer (cool surface, sharp inversion at 400 m)
-//   regime 1 = fair-weather cumulus (warm surface, conditionally unstable)
-//
-// Render path is currently a stub -- Phase 2 work after sim validates.
+// Single regime: plains fair-weather cumulus. (The marine-layer regime and
+// the style slider are retired; `weather` is kept as an API-compat no-op.)
 //
 // Native build (PGM dump driver): clang -DNATIVE_TEST -O2 -lm -o test src/clouds.c
 //
@@ -50,9 +52,8 @@ void *memcpy(void *dst, const void *src, unsigned long n) {
 #define DX 50.0f
 #define DZ 50.0f
 
-// --- Render output (stub for Phase 1) ---
-#define OUT_W 600
-#define OUT_H 300
+// (Render lives in JS now. The WASM exposes raw fields and primitives;
+// composition -- palette, view window, tones, banding -- is JS-side.)
 
 // --- Physics constants ---
 #define G       9.81f
@@ -85,9 +86,11 @@ static float qv_ref[NZ];
 static float p_ref[NZ];
 static float rho_ref[NZ];
 
-static int regime = 1;        // 0=marine, 1=cumulus
-static float mean_wind = 4.0f;
-static float style = 1.0f;
+// Plains cumulus scene. Big isolated towers over a flat horizon, gentle
+// wind so the clouds emerge in place rather than drift across the canvas.
+// `weather` is kept as a no-op for API compatibility.
+static float weather = 1.0f;
+static float mean_wind = 1.0f;
 static int frame_count = 0;
 static int periodic_bubbles_enabled = 1;
 
@@ -102,7 +105,7 @@ static float randf(void) {
     return (float)randu() / (float)0x7fffffff;
 }
 
-static unsigned char pixels[OUT_W * OUT_H * 4];
+// (Pixel buffer removed -- JS reads qc_field directly via Float32Array view.)
 
 // --- expf approximation ---
 //
@@ -149,33 +152,23 @@ static float saturation_mixing_ratio(float T, float p) {
 // upward from P0 using current rho_ref(z). Don't bother iterating -- the
 // gas-law density from a 1-pass T-then-p sweep is fine for visualization.
 //
-static void build_reference_profile(int reg) {
-    // T profile first
-    if (reg == 0) {
-        // Marine layer: cool well-mixed surface up to inversion at iz=8 (400 m),
-        // sharp +8 K jump, then standard 6.5 K/km lapse above.
-        for (int iz = 0; iz < NZ; iz++) {
-            float z = ((float)iz + 0.5f) * DZ;
-            float T;
-            if (iz < 8) {
-                T = 285.0f + 0.005f * z;          // weakly stable below
-            } else if (iz == 8) {
-                T = 285.0f + 0.005f * (8.0f * DZ) + 8.0f;
-            } else {
-                float T_top_inv = 285.0f + 0.005f * (8.0f * DZ) + 8.0f;
-                T = T_top_inv - 6.5e-3f * (z - 8.0f * DZ);
-            }
-            T_ref[iz] = T;
-        }
-    } else {
-        // Cumulus: T_surf=295, lapse 6.5 K/km.
-        for (int iz = 0; iz < NZ; iz++) {
-            float z = ((float)iz + 0.5f) * DZ;
-            T_ref[iz] = 295.0f - 6.5e-3f * z;
+static void build_reference_profile(float w) {
+    (void)w;  // weather knob is currently unused -- one fixed cumulus column
+
+    // Plains cumulus profile: warm surface, conditionally unstable through
+    // the troposphere, a gentle stability bump above 2 km to soften the
+    // anvil tops without preventing tall vertical development.
+    const float T_surf = 296.0f;
+    for (int iz = 0; iz < NZ; iz++) {
+        float z = ((float)iz + 0.5f) * DZ;
+        if (z < 2000.0f) {
+            T_ref[iz] = T_surf - 6.5e-3f * z;
+        } else {
+            float T_break = T_surf - 6.5e-3f * 2000.0f;
+            T_ref[iz] = T_break - 4.5e-3f * (z - 2000.0f);
         }
     }
 
-    // Hydrostatic pressure integration upward from P0
     float p = P0;
     for (int iz = 0; iz < NZ; iz++) {
         float rho = p / (RD * T_ref[iz]);
@@ -184,29 +177,19 @@ static void build_reference_profile(int reg) {
         p -= rho * G * DZ;
     }
 
-    // qv profile -- needs p_ref to compute saturation
-    if (reg == 0) {
-        // Marine: surface 0.0095 (right at saturation for T=285, p=100000;
-        // saturation adjustment will form a thin near-surface fog layer at
-        // equilibrium). Above inversion, much drier.
-        for (int iz = 0; iz < NZ; iz++) {
-            qv_ref[iz] = (iz < 8) ? 0.0095f : (0.0095f * 0.3f);
-        }
-    } else {
-        // Cumulus: target ~80% RH in BL. Cap at 0.95*qvs everywhere so the
-        // reference state is strictly subsaturated -- a constant 0.013 would
-        // cross qvs above ~900 m and trigger spurious condensation in the
-        // undisturbed state, breaking hydrostatic rest.
-        for (int iz = 0; iz < NZ; iz++) {
-            float z = ((float)iz + 0.5f) * DZ;
-            float qvs_here = saturation_mixing_ratio(T_ref[iz], p_ref[iz]);
-            float qv_target = 0.015f;
-            if (z > 1500.0f) qv_target = 0.015f - (z - 1500.0f) * (0.010f / 1500.0f);
-            float qv_cap = 0.95f * qvs_here;
-            float qv = qv_target < qv_cap ? qv_target : qv_cap;
-            if (qv < 0.001f) qv = 0.001f;
-            qv_ref[iz] = qv;
-        }
+    // Moist BL with RH ~ 90% at surface tapering to 50% above. High
+    // surface RH puts LCL low enough that bubbles condense reliably; the
+    // dry layer above 2 km keeps the visible cloud body distinct from
+    // surrounding air rather than a uniform haze.
+    for (int iz = 0; iz < NZ; iz++) {
+        float z = ((float)iz + 0.5f) * DZ;
+        float frac = z / ((float)NZ * DZ);
+        float rh = 0.92f + (0.50f - 0.92f) * frac;
+
+        float qvs_here = saturation_mixing_ratio(T_ref[iz], p_ref[iz]);
+        float qv = rh * qvs_here;
+        if (qv < 0.0005f) qv = 0.0005f;
+        qv_ref[iz] = qv;
     }
 }
 
@@ -258,63 +241,43 @@ static void apply_boundary_conditions(void) {
         T_field[i] = T_ref[0];
     }
 
-    // Sides
-    if (regime == 0) {
-        // Marine: west inflow, east outflow zero-gradient
-        for (int iz = 0; iz < NZ; iz++) {
-            u_field[IX(0, iz)]  = mean_wind;
-            T_field[IX(0, iz)]  = T_ref[iz];
-            qv_field[IX(0, iz)] = qv_ref[iz];
-            qc_field[IX(0, iz)] = 0.0f;
-            w_field[IX(0, iz)]  = 0.0f;
+    // Sides: west inflow, east outflow (zero-gradient). Same scheme for all
+    // weather values -- the inflow advects fresh reference air in, condensed
+    // qc drifts out the right side. Steady state is set by the inflow
+    // moisture and the column's saturation curve.
+    for (int iz = 0; iz < NZ; iz++) {
+        u_field[IX(0, iz)]  = mean_wind;
+        T_field[IX(0, iz)]  = T_ref[iz];
+        qv_field[IX(0, iz)] = qv_ref[iz];
+        qc_field[IX(0, iz)] = 0.0f;
+        w_field[IX(0, iz)]  = 0.0f;
 
-            int j = IX(NX - 1, iz);
-            int jl = IX(NX - 2, iz);
-            T_field[j]  = T_field[jl];
-            qv_field[j] = qv_field[jl];
-            qc_field[j] = qc_field[jl];
-            u_field[j]  = u_field[jl];
-            w_field[j]  = w_field[jl];
-        }
+        int j = IX(NX - 1, iz);
+        int jl = IX(NX - 2, iz);
+        T_field[j]  = T_field[jl];
+        qv_field[j] = qv_field[jl];
+        qc_field[j] = qc_field[jl];
+        u_field[j]  = u_field[jl];
+        w_field[j]  = w_field[jl];
     }
-    // Cumulus: periodic in x is enforced by bilinear_sample wrapping; nothing
-    // to do at side cells beyond what advection naturally produces.
 }
 
 // --- Bilinear sample (semi-Lagrangian backtrace) ---
 //
-// `regime` switches the x-boundary handling: marine clamps, cumulus wraps.
+// Always clamps -- domain is open in x with west inflow / east outflow.
 //
 static float bilinear_sample(const float *field, float x_m, float z_m) {
     float fx = x_m / DX - 0.5f;
     float fz = z_m / DZ - 0.5f;
 
-    // z is always clamped (rigid top, surface bottom).
     if (fz < 0.0f) fz = 0.0f;
     if (fz > (float)(NZ - 1) - 0.001f) fz = (float)(NZ - 1) - 0.001f;
+    if (fx < 0.0f) fx = 0.0f;
+    if (fx > (float)(NX - 1) - 0.001f) fx = (float)(NX - 1) - 0.001f;
 
-    int i0, i1;
-    float a;
-    if (regime == 1) {
-        // Periodic in x.
-        float fxw = fx;
-        // Wrap to [0, NX). fmodf-free.
-        while (fxw < 0.0f)              fxw += (float)NX;
-        while (fxw >= (float)NX)        fxw -= (float)NX;
-        int ii = (int)fxw;
-        if (ii < 0) ii = 0;
-        if (ii >= NX) ii = NX - 1;
-        a = fxw - (float)ii;
-        i0 = ii;
-        i1 = (ii + 1) % NX;
-    } else {
-        // Clamp in x.
-        if (fx < 0.0f) fx = 0.0f;
-        if (fx > (float)(NX - 1) - 0.001f) fx = (float)(NX - 1) - 0.001f;
-        i0 = (int)fx;
-        i1 = i0 + 1;
-        a = fx - (float)i0;
-    }
+    int i0 = (int)fx;
+    int i1 = i0 + 1;
+    float a = fx - (float)i0;
 
     int j0 = (int)fz;
     int j1 = j0 + 1;
@@ -391,13 +354,8 @@ static void pressure_project(float dt) {
             float du_dx, dw_dz;
 
             int ip = ix + 1, im = ix - 1;
-            if (regime == 1) {
-                ip = (ip >= NX) ? 0 : ip;
-                im = (im < 0) ? NX - 1 : im;
-            } else {
-                if (ip >= NX) ip = NX - 1;
-                if (im < 0)   im = 0;
-            }
+            if (ip >= NX) ip = NX - 1;
+            if (im < 0)   im = 0;
             du_dx = (u_field[IX(ip, iz)] - u_field[IX(im, iz)]) / (2.0f * DX);
 
             int jp = iz + 1, jm = iz - 1;
@@ -420,13 +378,8 @@ static void pressure_project(float dt) {
                 int i = IX(ix, iz);
 
                 int ip = ix + 1, im = ix - 1;
-                if (regime == 1) {
-                    ip = (ip >= NX) ? 0 : ip;
-                    im = (im < 0) ? NX - 1 : im;
-                } else {
-                    if (ip >= NX) ip = NX - 1;
-                    if (im < 0)   im = 0;
-                }
+                if (ip >= NX) ip = NX - 1;
+                if (im < 0)   im = 0;
                 int jp = iz + 1, jm = iz - 1;
                 if (jp >= NZ) jp = NZ - 1;
                 if (jm < 0)   jm = 0;
@@ -448,13 +401,8 @@ static void pressure_project(float dt) {
             int i = IX(ix, iz);
 
             int ip = ix + 1, im = ix - 1;
-            if (regime == 1) {
-                ip = (ip >= NX) ? 0 : ip;
-                im = (im < 0) ? NX - 1 : im;
-            } else {
-                if (ip >= NX) ip = NX - 1;
-                if (im < 0)   im = 0;
-            }
+            if (ip >= NX) ip = NX - 1;
+            if (im < 0)   im = 0;
             int jp = iz + 1, jm = iz - 1;
             if (jp >= NZ) jp = NZ - 1;
             if (jm < 0)   jm = 0;
@@ -531,203 +479,25 @@ static void apply_warm_bubble(float xc_m, float zc_m, float dT_K, float radius_m
     }
 }
 
-static void maybe_trigger_bubble(void) {
-    if (!periodic_bubbles_enabled) return;
-    if (regime != 1) return;
-    if (frame_count > 0 && (frame_count % BUBBLE_PERIOD) == 0) {
-        float xc = randf() * (float)NX * DX;
-        apply_warm_bubble(xc, BUBBLE_Z_M, BUBBLE_DT_K, BUBBLE_RADIUS_M);
-    }
-}
+// (Forcing scheduling lives in JS now -- it calls clouds_apply_bubble
+// to inject thermals on whatever cadence/pattern composition wants.)
 
 // --- Render ---
 //
-// Two endpoint styles blended by `style` in [0,1]:
-//   s=0 -- SF marine layer: cool palette, 5 tones, Bayer 4x4 dither,
-//          banded vertical sky gradient.
-//   s=1 -- Ghibli: 3 tones, no dither, smoothstep edges on density,
-//          flat saturated sky.
-//
-// Slider interpolation: tone count 5..3, dither amplitude 1..0, sky bands
-// many..1, palette colors lerped per channel. Cloud density also gets
-// sharper at s=1 (smoothstep on qc threshold).
-//
-// All work done by sampling qc bilinearly at output resolution -- sim grid
-// independence per the spec. Renderer reads qc only.
+// Removed. The WASM is physics-only now; JS reads qc_field via a typed
+// array view and does palette / view window / tone quantization there.
+// See assets/js/hooks/clouds_canvas.js.
 
-static const unsigned char BAYER4[16] = {
-     0,  8,  2, 10,
-    12,  4, 14,  6,
-     3, 11,  1,  9,
-    15,  7, 13,  5,
-};
-
-static float clampf(float v, float lo, float hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-// Bilinear qc sample in world coordinates. Out-of-domain returns 0 (clear sky).
-static float qc_world(float x_m, float z_m) {
-    if (z_m < 0.0f || z_m > (NZ - 1) * DZ) return 0.0f;
-    float fx = x_m / DX - 0.5f;
-    float fz = z_m / DZ - 0.5f;
-    if (fx < 0.0f) fx = 0.0f;
-    if (fx > (float)(NX - 1) - 0.001f) fx = (float)(NX - 1) - 0.001f;
-    if (fz < 0.0f) fz = 0.0f;
-    if (fz > (float)(NZ - 1) - 0.001f) fz = (float)(NZ - 1) - 0.001f;
-    int i = (int)fx, j = (int)fz;
-    float a = fx - (float)i, b = fz - (float)j;
-    float f00 = qc_field[IX(i, j)];
-    float f10 = qc_field[IX(i + 1, j)];
-    float f01 = qc_field[IX(i, j + 1)];
-    float f11 = qc_field[IX(i + 1, j + 1)];
-    return (1-a)*(1-b)*f00 + a*(1-b)*f10 + (1-a)*b*f01 + a*b*f11;
-}
-
-// Marine palette (5 tones, deepest -> brightest), cool blue-grays
-static const unsigned char MARINE[5][3] = {
-    { 90, 105, 120},   // deep shadow
-    {130, 145, 160},   // shadow
-    {170, 180, 190},   // mid
-    {205, 212, 220},   // hilite
-    {235, 238, 242},   // brightest
-};
-
-// Ghibli palette (3 tones), bright soft cumulus
-static const unsigned char GHIBLI[3][3] = {
-    {184, 200, 220},   // cool shadow
-    {228, 236, 244},   // mid (most of the body)
-    {252, 253, 255},   // highlight
-};
-
-// Sky endpoints
-static const unsigned char SKY_MARINE_HORIZON[3] = {200, 210, 218};
-static const unsigned char SKY_MARINE_ZENITH[3]  = {120, 145, 175};
-static const unsigned char SKY_GHIBLI_HORIZON[3] = {175, 215, 240};
-static const unsigned char SKY_GHIBLI_ZENITH[3]  = {110, 175, 220};
-
-static void render(void) {
-    float s = style;
-    float dither_amp = (1.0f - s) * 0.10f;
-    float sky_bandedness = (1.0f - s);  // 1 -> banded, 0 -> smooth single tone
-
-    // Sun direction (upper-right, world units; not normalized -- ray steps
-    // are in meters along this direction)
-    const float SUN_DX = -1.0f;
-    const float SUN_DZ = 2.0f;
-
-    for (int py = 0; py < OUT_H; py++) {
-        // py=0 is top of image. Map to z (m): top -> z=NZ*DZ.
-        float z_m = (1.0f - (float)py / (float)(OUT_H - 1)) * ((float)NZ * DZ);
-        // sky_t: 0 at horizon, 1 at zenith
-        float sky_t = (float)(OUT_H - 1 - py) / (float)(OUT_H - 1);
-
-        // Banded sky: snap sky_t to 6 bands at s=0, smooth at s=1
-        float sky_t_banded;
-        {
-            int bands = 6;
-            float snap = ((float)((int)(sky_t * bands)) + 0.5f) / (float)bands;
-            sky_t_banded = sky_t + (snap - sky_t) * sky_bandedness;
-        }
-
-        for (int px = 0; px < OUT_W; px++) {
-            float x_m = (float)px / (float)(OUT_W - 1) * ((float)NX * DX);
-
-            float qc_here = qc_world(x_m, z_m);
-
-            // Optical thickness toward the sun: integrate qc along ray
-            float thick = 0.0f;
-            for (int k = 1; k <= 6; k++) {
-                float step = 60.0f;  // meters per ray sample
-                float xs = x_m + SUN_DX * (float)k * step;
-                float zs = z_m + SUN_DZ * (float)k * step;
-                thick += qc_world(xs, zs) * step;
-            }
-
-            // Cloud density [0..1]. s=0 softer (more thickness gradients),
-            // s=1 sharper (smoothstep on qc threshold for crisp Ghibli edges).
-            float d_marine = qc_here * 60000.0f;
-            float d_ghibli;
-            {
-                float t = (qc_here - 0.00003f) / 0.00015f;
-                t = clampf(t, 0.0f, 1.0f);
-                d_ghibli = t * t * (3.0f - 2.0f * t);
-            }
-            float density = (1.0f - s) * d_marine + s * d_ghibli;
-            density = clampf(density, 0.0f, 1.0f);
-
-            // Light "shade" inside cloud: more thickness above -> darker
-            float t_above = clampf(thick * 4500.0f, 0.0f, 1.0f);
-            float shade_marine = 1.0f - 0.55f * t_above;
-            // Ghibli: just two flat zones (highlight on edges, body mid)
-            float shade_ghibli = (t_above < 0.25f) ? 1.0f : 0.55f;
-            float shade = (1.0f - s) * shade_marine + s * shade_ghibli;
-
-            // Bayer dither (s=0 only, fades out)
-            float dither = ((float)BAYER4[(py & 3) * 4 + (px & 3)] / 16.0f - 0.46875f);
-            shade += dither * dither_amp;
-            shade = clampf(shade, 0.0f, 1.0f);
-
-            // Pick cloud color via shade -> palette index, lerp marine and Ghibli.
-            unsigned char r_cloud, g_cloud, b_cloud;
-            {
-                // Marine: 5 tones, indexed by shade
-                int mi = (int)(shade * 4.0f + 0.5f);
-                if (mi < 0) mi = 0; if (mi > 4) mi = 4;
-                // Ghibli: 3 tones
-                int gi = (int)(shade * 2.0f + 0.5f);
-                if (gi < 0) gi = 0; if (gi > 2) gi = 2;
-                float r = (1.0f - s) * MARINE[mi][0] + s * GHIBLI[gi][0];
-                float g = (1.0f - s) * MARINE[mi][1] + s * GHIBLI[gi][1];
-                float b = (1.0f - s) * MARINE[mi][2] + s * GHIBLI[gi][2];
-                r_cloud = (unsigned char)r;
-                g_cloud = (unsigned char)g;
-                b_cloud = (unsigned char)b;
-            }
-
-            // Sky: vertical gradient between horizon and zenith, lerp endpoints
-            unsigned char r_sky, g_sky, b_sky;
-            {
-                float t = sky_t_banded;
-                float r_m = (1.0f - t) * SKY_MARINE_HORIZON[0] + t * SKY_MARINE_ZENITH[0];
-                float g_m = (1.0f - t) * SKY_MARINE_HORIZON[1] + t * SKY_MARINE_ZENITH[1];
-                float b_m = (1.0f - t) * SKY_MARINE_HORIZON[2] + t * SKY_MARINE_ZENITH[2];
-                float r_g = (1.0f - t) * SKY_GHIBLI_HORIZON[0] + t * SKY_GHIBLI_ZENITH[0];
-                float g_g = (1.0f - t) * SKY_GHIBLI_HORIZON[1] + t * SKY_GHIBLI_ZENITH[1];
-                float b_g = (1.0f - t) * SKY_GHIBLI_HORIZON[2] + t * SKY_GHIBLI_ZENITH[2];
-                r_sky = (unsigned char)((1.0f - s) * r_m + s * r_g);
-                g_sky = (unsigned char)((1.0f - s) * g_m + s * g_g);
-                b_sky = (unsigned char)((1.0f - s) * b_m + s * b_g);
-            }
-
-            // Composite
-            unsigned char r_out, g_out, b_out;
-            {
-                float a = density;
-                r_out = (unsigned char)((1.0f - a) * r_sky + a * r_cloud);
-                g_out = (unsigned char)((1.0f - a) * g_sky + a * g_cloud);
-                b_out = (unsigned char)((1.0f - a) * b_sky + a * b_cloud);
-            }
-
-            unsigned char *p = &pixels[(py * OUT_W + px) * 4];
-            p[0] = r_out;
-            p[1] = g_out;
-            p[2] = b_out;
-            p[3] = 255;
-        }
-    }
-}
 
 // --- Public API ---
 
 EXPORT("clouds_init")
 void clouds_init(void) {
-    regime = 1;
-    mean_wind = 4.0f;
-    style = 1.0f;
+    weather = 1.0f;
+    mean_wind = 1.0f;
     frame_count = 0;
     rng_state = 0xC0DEC0DEu;
-    build_reference_profile(regime);
+    build_reference_profile(weather);
     init_fields();
     apply_boundary_conditions();
 }
@@ -735,7 +505,6 @@ void clouds_init(void) {
 EXPORT("clouds_step")
 void clouds_step(int n) {
     for (int s = 0; s < n; s++) {
-        maybe_trigger_bubble();
         advect_all(DT);
         apply_buoyancy(DT);
         pressure_project(DT);
@@ -743,22 +512,16 @@ void clouds_step(int n) {
         apply_boundary_conditions();
         frame_count++;
     }
-    render();
 }
 
-EXPORT("clouds_set_regime")
-void clouds_set_regime(int r) {
-    regime = (r == 0) ? 0 : 1;
-    build_reference_profile(regime);
-    init_fields();
-    apply_boundary_conditions();
-}
-
-EXPORT("clouds_set_style")
-void clouds_set_style(float s) {
-    if (s < 0.0f) s = 0.0f;
-    if (s > 1.0f) s = 1.0f;
-    style = s;
+// Kept for API compatibility -- currently the scene is fixed plains
+// cumulus, so the value is stored but doesn't change anything yet. No
+// field reset; future versions can swap profiles smoothly.
+EXPORT("clouds_set_weather")
+void clouds_set_weather(float w) {
+    if (w < 0.0f) w = 0.0f;
+    if (w > 1.0f) w = 1.0f;
+    weather = w;
 }
 
 EXPORT("clouds_set_wind")
@@ -781,10 +544,25 @@ void clouds_seed(int pattern) {
     // bubbles will be applied during stepping for cumulus).
 }
 
-EXPORT("clouds_pixels")
-unsigned char *clouds_pixels(void) {
-    return pixels;
+// JS-callable forcing primitive. Add a Gaussian warm anomaly centered
+// at (x_m, z_m). All composition (cadence, cluster patterns, distributed
+// vs impulsive) is the JS hook's job.
+EXPORT("clouds_apply_bubble")
+void clouds_apply_bubble(float x_m, float z_m, float dT_K, float radius_m) {
+    apply_warm_bubble(x_m, z_m, dT_K, radius_m);
 }
+
+// Pointer to the qc field. JS wraps this in a Float32Array view of
+// size NX*NZ. Stable across step() calls because everything is static.
+EXPORT("clouds_qc")
+const float *clouds_qc(void) {
+    return qc_field;
+}
+
+EXPORT("clouds_grid_nx") int clouds_grid_nx(void) { return NX; }
+EXPORT("clouds_grid_nz") int clouds_grid_nz(void) { return NZ; }
+EXPORT("clouds_grid_dx") float clouds_grid_dx(void) { return DX; }
+EXPORT("clouds_grid_dz") float clouds_grid_dz(void) { return DZ; }
 
 #ifdef NATIVE_TEST
 
@@ -792,7 +570,7 @@ void clouds_trigger_bubble(float x_m, float z_m, float dT_K, float radius_m) {
     apply_warm_bubble(x_m, z_m, dT_K, radius_m);
 }
 
-const float *clouds_qc(void) { return qc_field; }
+// clouds_qc lives in the public API now -- native test re-uses it.
 const float *clouds_w(void) { return w_field; }
 const float *clouds_T(void) { return T_field; }
 const float *clouds_qv(void) { return qv_field; }
@@ -861,10 +639,10 @@ static int qc_top_iz(float threshold) {
     return top;
 }
 
-static void run_validation(const char *label, int reg, float wind, int seed_pattern,
+static void run_validation(const char *label, float w, float wind, int seed_pattern,
                           int n_steps, int dump_every, const char *out_dir) {
     fprintf(stderr, "\n=== %s ===\n", label);
-    clouds_set_regime(reg);
+    clouds_set_weather(w);
     clouds_set_wind(wind);
     clouds_seed(seed_pattern);
 
@@ -911,70 +689,14 @@ int main(int argc, char **argv) {
 
     // Test 2: cumulus single-bubble validation
     clouds_init();
-    run_validation("cumulus_bubble", 1, 0.0f, 1, 600, 30, out_dir);
+    run_validation("cumulus_bubble", 1.0f, 0.0f, 1, 600, 30, out_dir);
 
     // Test 3: marine layer steady state
     clouds_init();
-    run_validation("marine", 0, 5.0f, 2, 1200, 60, out_dir);
+    run_validation("marine", 0.0f, 5.0f, 2, 1200, 60, out_dir);
 
-    // Test 4: render endpoints. Re-run cumulus then marine, and after a
-    // representative number of steps dump RGB ppm at s=0, 0.5, 1.
-    fprintf(stderr, "\n=== render endpoints ===\n");
-    {
-        // Cumulus with bubble well-developed (cloud grown ~1 km tall)
-        clouds_init();
-        clouds_seed(1);
-        for (int i = 0; i < 540; i++) clouds_step(1);
-        for (int k = 0; k <= 2; k++) {
-            float s = (float)k * 0.5f;
-            clouds_set_style(s);
-            clouds_step(0); // refresh render with new style (step(0) is a no-op for sim, but we call render directly)
-            // step(0) doesn't render; call clouds_pixels instead which doesn't render either.
-            // We need render to be invoked. Easiest: call clouds_step(1) which
-            // will both step physics and render. The extra step is fine.
-            clouds_step(1);
-            unsigned char *px = clouds_pixels();
-            char path[256];
-            snprintf(path, sizeof(path), "%s/render_cumulus_s%02d.ppm", out_dir, (int)(s * 10.0f));
-            FILE *f = fopen(path, "wb");
-            if (f) {
-                fprintf(f, "P6\n%d %d\n255\n", OUT_W, OUT_H);
-                for (int i = 0; i < OUT_W * OUT_H; i++) {
-                    fputc(px[i*4+0], f);
-                    fputc(px[i*4+1], f);
-                    fputc(px[i*4+2], f);
-                }
-                fclose(f);
-                fprintf(stderr, "  wrote %s\n", path);
-            }
-        }
-
-        // Marine at step ~600 (steady state)
-        clouds_init();
-        clouds_set_regime(0);
-        clouds_set_wind(5.0f);
-        clouds_seed(2);
-        for (int i = 0; i < 600; i++) clouds_step(1);
-        for (int k = 0; k <= 2; k++) {
-            float s = (float)k * 0.5f;
-            clouds_set_style(s);
-            clouds_step(1);
-            unsigned char *px = clouds_pixels();
-            char path[256];
-            snprintf(path, sizeof(path), "%s/render_marine_s%02d.ppm", out_dir, (int)(s * 10.0f));
-            FILE *f = fopen(path, "wb");
-            if (f) {
-                fprintf(f, "P6\n%d %d\n255\n", OUT_W, OUT_H);
-                for (int i = 0; i < OUT_W * OUT_H; i++) {
-                    fputc(px[i*4+0], f);
-                    fputc(px[i*4+1], f);
-                    fputc(px[i*4+2], f);
-                }
-                fclose(f);
-                fprintf(stderr, "  wrote %s\n", path);
-            }
-        }
-    }
+    // (Render-endpoint test removed -- composition is JS-side now. PGM
+    // dumps of qc are still available via dump_pgm() in the runs above.)
 
     fprintf(stderr, "\nDone. Frames dumped to %s/\n", out_dir);
     return 0;

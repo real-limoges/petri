@@ -35,7 +35,7 @@ $CC --target=wasm32-unknown-unknown -O2 -flto -nostdlib \
 
 $CC --target=wasm32-unknown-unknown -O2 -flto -nostdlib \
     -Wl,--no-entry -Wl,--export-dynamic \
-    -Wl,--initial-memory=2097152 \
+    -Wl,--initial-memory=4194304 \
     -o wasm/clouds.wasm src/clouds.c
 
 echo "Built all WASM modules."
