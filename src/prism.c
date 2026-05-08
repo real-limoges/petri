@@ -164,12 +164,43 @@ static int refract(float dx, float dy, float nx, float ny,
     return 1;
 }
 
-static void compute_ray(int i, float lambda_nm, float *out) {
-    (void)i;
+// Find the closest triangle edge a ray strikes, optionally skipping one
+// edge (the entry face when tracing the refracted ray, the exit face when
+// tracing a TIR bounce). Returns the edge index (0..2) or -1 on miss.
+//
+// Out parameters are populated only on a hit; pass NULL to skip the
+// outward-normal computation when the caller doesn't need it.
+static int closest_edge_hit(float ox, float oy, float dx, float dy,
+                             float verts[3][2], int skip_edge,
+                             float cx, float cy,
+                             float *out_x,  float *out_y,
+                             float *out_nx, float *out_ny) {
+    int   hit_edge = -1;
+    float hit_t    = 0.0f;
+    for (int e = 0; e < 3; e++) {
+        if (e == skip_edge) continue;
+        float ax = verts[e][0],         ay = verts[e][1];
+        float bx = verts[(e+1)%3][0],   by = verts[(e+1)%3][1];
+        float t, s;
+        if (!ray_seg_intersect(ox, oy, dx, dy, ax, ay, bx, by, &t, &s)) continue;
+        // t > epsilon rules out re-hitting the edge we just left;
+        // s in [0, 1] keeps the hit on the segment, not its infinite line.
+        if (t <= 1e-4f || s < 0.0f || s > 1.0f) continue;
+        if (hit_edge == -1 || t < hit_t) {
+            hit_edge = e;
+            hit_t    = t;
+            *out_x = ox + t * dx;
+            *out_y = oy + t * dy;
+            if (out_nx) edge_outward_normal(ax, ay, bx, by, cx, cy, out_nx, out_ny);
+        }
+    }
+    return hit_edge;
+}
 
+static void compute_ray(float lambda_nm, float *out) {
     // Equilateral triangle, vertex 0 apex-up at tilt=0, in canvas y-down.
     float verts[3][2];
-    float base_angle[3] = {
+    const float base_angle[3] = {
         -HALF_PI,
         -HALF_PI + 2.0f * PI / 3.0f,
         -HALF_PI - 2.0f * PI / 3.0f,
@@ -185,29 +216,12 @@ static void compute_ray(int i, float lambda_nm, float *out) {
     float r, g, b;
     wavelength_rgb(lambda_nm, &r, &g, &b);
 
-    float ox = 0.0f, oy = BEAM_Y;
-    float dx = 1.0f, dy = 0.0f;
+    float ox = 0.0f,  oy = BEAM_Y;
+    float dx = 1.0f,  dy = 0.0f;
 
-    int   hit_edge = -1;
-    float hit_t = 0.0f;
-    float entry_x = 0.0f, entry_y = 0.0f;
-    float entry_nx = 0.0f, entry_ny = 0.0f;
-
-    for (int e = 0; e < 3; e++) {
-        int j0 = e, j1 = (e + 1) % 3;
-        float ax = verts[j0][0], ay = verts[j0][1];
-        float bx = verts[j1][0], by = verts[j1][1];
-        float t, s;
-        if (!ray_seg_intersect(ox, oy, dx, dy, ax, ay, bx, by, &t, &s)) continue;
-        if (t <= 1e-4f || s < 0.0f || s > 1.0f) continue;
-        if (hit_edge == -1 || t < hit_t) {
-            hit_edge = e;
-            hit_t   = t;
-            entry_x = ox + t * dx;
-            entry_y = oy + t * dy;
-            edge_outward_normal(ax, ay, bx, by, cx, cy, &entry_nx, &entry_ny);
-        }
-    }
+    float entry_x, entry_y, entry_nx, entry_ny;
+    int hit_edge = closest_edge_hit(ox, oy, dx, dy, verts, -1, cx, cy,
+                                    &entry_x, &entry_y, &entry_nx, &entry_ny);
 
     // Beam misses prism — straight through.
     if (hit_edge == -1) {
@@ -221,6 +235,8 @@ static void compute_ray(int i, float lambda_nm, float *out) {
     float n_glass = index_of(lambda_nm);
     float tx, ty;
     if (!refract(dx, dy, entry_nx, entry_ny, 1.0f, n_glass, &tx, &ty)) {
+        // TIR at entry shouldn't happen physically (we're going from low
+        // to high index), but degenerate geometry can still trip it.
         out[0] = entry_x;  out[1] = entry_y;
         out[2] = entry_x;  out[3] = entry_y;
         out[4] = entry_x;  out[5] = entry_y;
@@ -228,27 +244,10 @@ static void compute_ray(int i, float lambda_nm, float *out) {
         return;
     }
 
-    int   exit_edge = -1;
-    float exit_t = 0.0f;
-    float exit_x = 0.0f, exit_y = 0.0f;
-    float exit_nx = 0.0f, exit_ny = 0.0f;
-
-    for (int e = 0; e < 3; e++) {
-        if (e == hit_edge) continue;
-        int j0 = e, j1 = (e + 1) % 3;
-        float ax = verts[j0][0], ay = verts[j0][1];
-        float bx = verts[j1][0], by = verts[j1][1];
-        float t, s;
-        if (!ray_seg_intersect(entry_x, entry_y, tx, ty, ax, ay, bx, by, &t, &s)) continue;
-        if (t <= 1e-4f || s < 0.0f || s > 1.0f) continue;
-        if (exit_edge == -1 || t < exit_t) {
-            exit_edge = e;
-            exit_t = t;
-            exit_x = entry_x + t * tx;
-            exit_y = entry_y + t * ty;
-            edge_outward_normal(ax, ay, bx, by, cx, cy, &exit_nx, &exit_ny);
-        }
-    }
+    float exit_x, exit_y, exit_nx, exit_ny;
+    int exit_edge = closest_edge_hit(entry_x, entry_y, tx, ty, verts, hit_edge,
+                                     cx, cy,
+                                     &exit_x, &exit_y, &exit_nx, &exit_ny);
 
     if (exit_edge == -1) {
         out[0] = entry_x;  out[1] = entry_y;
@@ -261,11 +260,12 @@ static void compute_ray(int i, float lambda_nm, float *out) {
     // Refract out of the exit face. On TIR, reflect the internal ray and
     // trace it to whichever third face it strikes — that bounce point
     // becomes `screen`, so JS renders the reflection inside the prism
-    // instead of a stub. Honest physics; the post-bounce escape (if any)
-    // is omitted because the export only carries three points.
+    // instead of a stub. The post-bounce escape (if any) is omitted
+    // because the export only carries three points per ray.
     float screen_x, screen_y;
     float ox2, oy2;
     if (refract(tx, ty, exit_nx, exit_ny, n_glass, 1.0f, &ox2, &oy2)) {
+        // Walk the refracted ray to whichever world wall it hits first.
         float t_x = 1e30f, t_y = 1e30f;
         if (ox2 >  1e-6f) t_x = (WORLD_W - exit_x) / ox2;
         if (ox2 < -1e-6f) t_x = (0.0f    - exit_x) / ox2;
@@ -277,28 +277,14 @@ static void compute_ray(int i, float lambda_nm, float *out) {
         screen_y = exit_y + t_hit * oy2;
     } else {
         float dot = tx * exit_nx + ty * exit_ny;
-        float rx = tx - 2.0f * dot * exit_nx;
-        float ry = ty - 2.0f * dot * exit_ny;
-        int   bounce_edge = -1;
-        float bounce_t = 0.0f;
-        float bounce_x = exit_x, bounce_y = exit_y;
-        for (int e = 0; e < 3; e++) {
-            if (e == exit_edge) continue;
-            int j0 = e, j1 = (e + 1) % 3;
-            float ax = verts[j0][0], ay = verts[j0][1];
-            float bx = verts[j1][0], by = verts[j1][1];
-            float t, s;
-            if (!ray_seg_intersect(exit_x, exit_y, rx, ry, ax, ay, bx, by, &t, &s)) continue;
-            if (t <= 1e-4f || s < 0.0f || s > 1.0f) continue;
-            if (bounce_edge == -1 || t < bounce_t) {
-                bounce_edge = e;
-                bounce_t = t;
-                bounce_x = exit_x + t * rx;
-                bounce_y = exit_y + t * ry;
-            }
-        }
-        screen_x = bounce_x;
-        screen_y = bounce_y;
+        float rx  = tx - 2.0f * dot * exit_nx;
+        float ry  = ty - 2.0f * dot * exit_ny;
+        float bx, by;
+        int b_edge = closest_edge_hit(exit_x, exit_y, rx, ry, verts, exit_edge,
+                                      cx, cy, &bx, &by, 0, 0);
+        if (b_edge == -1) { bx = exit_x; by = exit_y; }
+        screen_x = bx;
+        screen_y = by;
     }
 
     out[0] = entry_x;  out[1] = entry_y;
@@ -325,7 +311,7 @@ void prism_step(void) {
     for (int i = 0; i < N_SAMPLES; i++) {
         float t = (float)i / (float)(N_SAMPLES - 1);
         float lambda = LAMBDA_MIN + t * (LAMBDA_MAX - LAMBDA_MIN);
-        compute_ray(i, lambda, &rays[i * FLOATS_PER_RAY]);
+        compute_ray(lambda, &rays[i * FLOATS_PER_RAY]);
     }
 }
 
