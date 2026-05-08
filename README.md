@@ -32,7 +32,7 @@ Not really a simulation — a lookup table for the Stockman & Sharpe (2000) 2-de
 
 ### Clouds
 
-A 2D vertical slice of moist convection — Boussinesq physics with a saturation closure. Each step does semi-Lagrangian advection of temperature, water vapor, cloud water, and velocity; applies buoyancy and dry-adiabatic cooling; projects velocity onto the divergence-free subspace via Jacobi pressure; then runs Tetens-formula saturation adjustment. Two regimes share the solver and differ only in reference profile and boundary conditions: marine layer (cool surface, sharp inversion at 400 m, fog) and fair-weather cumulus (warm surface, conditionally unstable, cauliflower clouds drifting on a 4 m/s wind). Render is in C — qc is sampled bilinearly at output resolution and shaded into pixels through a style slider that lerps between SF marine realism (cool palette, Bayer dither, banded sky) and Ghibli (3 tones, smoothstep edges, flat saturated sky).
+A 2D vertical slice of moist convection — Boussinesq physics with a saturation closure. Each step does semi-Lagrangian advection of temperature, water vapor, cloud water, and velocity; applies buoyancy and dry-adiabatic cooling; projects velocity onto the divergence-free subspace via Jacobi pressure; then runs Tetens-formula saturation adjustment. The current scene is plains fair-weather cumulus: warm surface, conditionally unstable atmosphere, cauliflower clouds drifting on a gentle wind. The WASM module is physics-only — it exposes the raw cloud-water field and a `clouds_apply_bubble` forcing primitive; palette, view window, and tone mapping live in the consuming JS hook (`clouds_canvas.js` on the Fugue side).
 
 ---
 
@@ -43,16 +43,18 @@ A 2D vertical slice of moist convection — Boussinesq physics with a saturation
 ```
 petri/
 ├── src/
-│   ├── boids.c          # flocking, parameterized (240 lines)
-│   ├── clouds.c         # 2D moist convection + render (~750 lines)
-│   ├── cones.c          # LMS cone fundamentals (225 lines)
-│   ├── langton.c        # ants (91 lines)
-│   ├── oscillators.c    # Kuramoto (106 lines)
-│   ├── prism.c          # dispersion, geometry-out (340 lines)
-│   └── sandpile.c       # abelian sandpile (208 lines)
+│   ├── boids.c          # flocking, parameterized
+│   ├── clouds.c         # 2D moist convection
+│   ├── clouds_test.c    # native PGM-dump driver, includes clouds.c
+│   ├── cones.c          # LMS cone fundamentals
+│   ├── langton.c        # multi-ant Langton
+│   ├── oscillators.c    # Kuramoto
+│   ├── prism.c          # dispersion, geometry-out
+│   └── sandpile.c       # abelian sandpile
 ├── js/
 │   ├── boids.js         # WASM loader + export wrappers
 │   ├── clouds.js
+│   ├── cones.js
 │   ├── langton.js
 │   ├── oscillators.js
 │   ├── prism.js
@@ -70,7 +72,7 @@ petri/
 └── README.md
 ```
 
-Each module is one C file. Most are paired with one JS file (cones is consumed directly via its WASM exports from Fugue-side code).
+Each module is one C file with a matching JS wrapper. Both `cones` and `clouds` can also be loaded directly from Fugue-side code that only needs the raw exports.
 
 ### Simulation Details
 
@@ -82,13 +84,13 @@ Each module is one C file. Most are paired with one JS file (cones is consumed d
 | **Sandpile** | up to 2560×1440 padded | — (grid cells) | drop position / mode | intensity buffer + avalanche stats |
 | **Prism** | 600×400 world units | 60 wavelength samples | tilt (radians) | float32 ray records (9 floats per ray) |
 | **Cones** | 390–780 nm, 1 nm step | — | wavelength, daltonism mode | 3 floats (L, M, S) |
-| **Clouds** | 6 km × 3 km, 120×60 cells | — (Eulerian fields) | regime (marine/cumulus), style (0..1), wind, seed pattern | 600×300 RGBA pixels |
+| **Clouds** | 6 km × 3 km, 120×60 cells | — (Eulerian fields) | wind, seed pattern, warm-bubble forcing | float32 cloud-water field (NX×NZ) |
 
 ### WASM Exports
 
 ```c
 // boids.c
-void  boids_init(void);
+void  boids_init(int count, int width, int height);
 void  boids_set_count(int n);
 void  boids_set_sep_radius(float r);
 void  boids_set_align_radius(float r);
@@ -104,12 +106,12 @@ void  boids_step(int n);
 unsigned char* boids_pixels(void);
 
 // langton.c
-void  langton_init(int num_ants);
+void  langton_init(int num_ants, int width, int height);
 void  langton_step(int n);
 unsigned char* langton_pixels(void);
 
 // oscillators.c
-void  osc_init(void);
+void  osc_init(int width, int height);
 void  osc_set_coupling(float k);
 void  osc_step(int n);
 unsigned char* osc_pixels(void);
@@ -129,7 +131,7 @@ unsigned char* sandpile_pixels(void);
 void  prism_init(void);
 void  prism_set_tilt(float radians);
 void  prism_step(void);
-float* prism_rays(void);                    // n_rays * 9 floats
+const float* prism_rays(void);              // n_rays * 9 floats
 int   prism_ray_count(void);
 
 // cones.c
@@ -139,14 +141,18 @@ const float* cones_values(void);
 int   cones_lambda_min(void);               // 390
 int   cones_lambda_max(void);               // 780
 
-// clouds.c
-void  clouds_init(void);                    // defaults to fair-weather cumulus
-void  clouds_step(int n);                   // n sim steps (Δt = 1 s) + render
-void  clouds_set_regime(int regime);        // 0 = marine, 1 = cumulus
-void  clouds_set_style(float s);            // 0..1 (marine realism .. Ghibli)
+// clouds.c — physics-only; render lives JS-side
+void  clouds_init(void);
+void  clouds_step(int n);                   // n × Δt = 1 s
 void  clouds_set_wind(float u_ms);
+void  clouds_set_weather(float w);          // API-compat no-op
 void  clouds_seed(int pattern);             // 0=rest, 1=test bubble, 2=default
-unsigned char* clouds_pixels(void);         // 600×300 RGBA
+void  clouds_apply_bubble(float x_m, float z_m, float dT_K, float radius_m);
+const float* clouds_qc(void);               // NX*NZ cloud-water field
+int   clouds_grid_nx(void);
+int   clouds_grid_nz(void);
+float clouds_grid_dx(void);
+float clouds_grid_dz(void);
 ```
 
 ### Shared Implementation Patterns
@@ -157,7 +163,7 @@ unsigned char* clouds_pixels(void);         // 600×300 RGBA
 
 **Toroidal boundaries — except sandpile.** Boids/Langton/Oscillators wrap with modular arithmetic. Sandpile uses a sentinel-padded grid with permanently-`scheduled` border cells, so grains falling off vanish (open boundary). Prism is continuous geometry, no grid.
 
-**Double-buffering.** Oscillators uses read/write phase buffer pairs, swapped after each step, so neighbor reads see stable data.
+**Ping-pong buffers.** Oscillators keeps two phase arrays and swaps the read/write pointers after each step, so neighbour reads always see the previous frame and the renderer always sees a fully-resolved frame.
 
 **Zero-copy output.** Pixel/ray functions return pointers to static buffers. JS wraps each in a typed-array view (`Uint8ClampedArray` for pixels, `Float32Array` for rays) — no data crosses the JS/WASM boundary per frame.
 
@@ -175,9 +181,9 @@ Requires LLVM with `wasm-ld`:
 
 The script auto-detects Homebrew LLVM on macOS. Override with `CC=/path/to/clang ./build_all.sh`. Outputs land in `wasm/`. After building, commit the `.wasm` files — Fugue imports them directly.
 
-Initial-memory sizing per module is set in `build_all.sh`: 32 MB for boids/langton, 64 MB for oscillators/sandpile, 128 KB for prism/cones, 2 MB for clouds. Don't bump these casually — the JS side relies on the buffer never detaching, which means no `memory.grow`.
+Initial-memory sizing per module is set in `build_all.sh`: 32 MB for boids/langton, 64 MB for oscillators/sandpile, 128 KB for prism/cones, 4 MB for clouds. Don't bump these casually — the JS side relies on the buffer never detaching, which means no `memory.grow`.
 
-Clouds also has a native build mode (`clang -DNATIVE_TEST -O2 src/clouds.c -o test_clouds`) that gates out the WASM export attributes and adds a `main()` driver. Running it dumps PGM frames of the `qc` field and PPM frames of the rendered output, plus diagnostics for hydrostatic rest, the bubble test, marine layer steady state, and total-water conservation. This is the only module with a native validation path so far — added because the cloud sim has more physics to get wrong than the others.
+Clouds has a native validation driver in `src/clouds_test.c`. It `#include`s `clouds.c` with `NATIVE_TEST` defined so the driver can reach the static fields, then dumps PGM frames of the `qc` field plus diagnostics for hydrostatic rest, single-bubble convection, and a marine-layer steady state. Build with `clang -O2 -lm -o test src/clouds_test.c`, run with `./test ./out`. This is the only module with a native validation path so far — added because the cloud sim has more physics to get wrong than the others.
 
 ### Fugue Integration
 
@@ -185,9 +191,9 @@ Git submodule at `assets/vendor/petri/`. LiveView hooks import from `js/*.js` an
 
 ### Design Decisions
 
-**C, not Rust/Zig** — ~1,200 lines of arithmetic on flat arrays. No allocator, no strings, no error handling. C is the right tool.
+**C, not Rust/Zig** — Arithmetic on flat arrays, no allocator, no strings, no error handling. C is the right tool for what this is.
 
-**No Emscripten** — These modules use zero libc functions. Direct `clang --target=wasm32` produces tiny binaries (1–6 KB each) and ~20 lines of JS glue per module vs. Emscripten's generated loader.
+**No Emscripten** — These modules use zero libc functions. Direct `clang --target=wasm32` produces tiny binaries (most modules under 6 KB) and ~25 lines of JS glue per module vs. Emscripten's generated loader.
 
 **Canvas 2D, not WebGPU** — Rendering is a single `putImageData` (or a few hundred line draws for prism). WebGPU only helps if a simulation moves to a compute shader.
 

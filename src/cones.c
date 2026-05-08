@@ -179,12 +179,15 @@ static const float S_table[N_LAMBDAS] = {
     0.000000e+00f, 0.000000e+00f, 0.000000e+00f, 0.000000e+00f, 0.000000e+00f, 0.000000e+00f, 0.000000e+00f
 };
 
+// Output of cones_activations(). The pointer is stable for the module's
+// lifetime, but the contents are overwritten by every call — callers must
+// consume the values before invoking cones_activations again.
 static float result[3];
 
 static float lerp_at(const float *table, float lambda_nm) {
-    if (lambda_nm <= (float)LAMBDA_MIN) return table[0];
-    if (lambda_nm >= (float)LAMBDA_MAX) return table[N_LAMBDAS - 1];
-    float x = lambda_nm - (float)LAMBDA_MIN;
+    if (lambda_nm <= LAMBDA_MIN) return table[0];
+    if (lambda_nm >= LAMBDA_MAX) return table[N_LAMBDAS - 1];
+    float x = lambda_nm - LAMBDA_MIN;
     int   i = (int)x;
     float f = x - (float)i;
     return table[i] * (1.0f - f) + table[i + 1] * f;
@@ -197,13 +200,14 @@ void cones_init(void) {
     result[2] = 0.0f;
 }
 
-// mode: 0 normal, 1 protanope (no L), 2 deuteranope (no M), 3 tritanope (no S)
+// mode: 0 normal, 1 protanope (suppress L), 2 deuteranope (suppress M),
+// 3 tritanope (suppress S). Any other value is treated as 0 (normal).
 __attribute__((export_name("cones_activations")))
 const float* cones_activations(float lambda_nm, int mode) {
     result[0] = lerp_at(L_table, lambda_nm);
     result[1] = lerp_at(M_table, lambda_nm);
     result[2] = lerp_at(S_table, lambda_nm);
-    if (mode == 1) result[0] = 0.0f;
+    if      (mode == 1) result[0] = 0.0f;
     else if (mode == 2) result[1] = 0.0f;
     else if (mode == 3) result[2] = 0.0f;
     return result;
